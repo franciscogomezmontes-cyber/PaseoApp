@@ -1,10 +1,12 @@
 import { useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  Animated,
   Image,
+  Modal,
   ScrollView,
   StyleSheet,
   Switch,
@@ -20,28 +22,77 @@ import { useTripStore } from "../../src/store/useTripStore";
 
 const VERSION = "0.1.0";
 
-const WHATS_NEW = [
+// ─────────────────────────────────────────────
+// Static content
+// ─────────────────────────────────────────────
+const HOW_IT_WORKS = [
   {
-    icon: "🗺️",
-    title: "Mis Paseos",
-    desc: "Crea y gestiona tus paseos con código de invitación.",
+    step: "01",
+    title: "Crea un paseo",
+    desc: "Define fechas, lugar y comparte el código de invitación con tu grupo.",
   },
   {
-    icon: "📖",
-    title: "Recetas desde la nube",
-    desc: "Catálogo de recetas compartido, sincronizado en tiempo real.",
+    step: "02",
+    title: "Arma el menú",
+    desc: "Elige recetas del catálogo compartido para cada día del paseo.",
   },
   {
-    icon: "👥",
-    title: "Participantes por familia",
-    desc: "Agrupa personas por unidad familiar con factor de consumo.",
+    step: "03",
+    title: "Registra los gastos",
+    desc: "Anota quién pagó qué. La app divide todo automáticamente.",
   },
   {
-    icon: "🔐",
-    title: "Cuentas de usuario",
-    desc: "Acceso seguro con email y contraseña.",
+    step: "04",
+    title: "Liquida con un toque",
+    desc: "Calcula transferencias mínimas para cuadrar cuentas al final.",
   },
 ];
+
+const TESTIMONIOS = [
+  {
+    nombre: "Camila R.",
+    texto: "Pasamos de planillas de Excel a PaseoApp. La diferencia es brutal.",
+    emoji: "🏕️",
+  },
+  {
+    nombre: "Andrés M.",
+    texto: "Por fin algo que entiende que hay niños con factor distinto.",
+    emoji: "👨‍👩‍👧‍👦",
+  },
+  {
+    nombre: "Laura P.",
+    texto: "El módulo de recetas me salvó. Nunca más improvisamos en el campo.",
+    emoji: "🍳",
+  },
+];
+
+const FAQ = [
+  {
+    q: "¿Cuántas personas puede tener un paseo?",
+    a: "No hay límite. Puedes tener tantos participantes como necesites, organizados por familias.",
+  },
+  {
+    q: "¿Qué pasa si alguien no come en una comida?",
+    a: "Puedes desactivarlo para ese momento específico y el costo se redistribuye automáticamente.",
+  },
+  {
+    q: "¿Puedo usar PaseoApp sin internet?",
+    a: "Necesitas conexión para sincronizar datos, pero la navegación básica funciona con caché.",
+  },
+  {
+    q: "¿Cómo se calculan las liquidaciones?",
+    a: "Usamos el algoritmo de transferencias mínimas para reducir al máximo el número de pagos.",
+  },
+];
+
+const ESTADO_CONFIG: Record<
+  string,
+  { color: string; bg: string; label: string }
+> = {
+  planificacion: { color: "#92400E", bg: "#FEF3C7", label: "Planificación" },
+  activo: { color: "#065F46", bg: "#D1FAE5", label: "Activo" },
+  liquidado: { color: "#1D4ED8", bg: "#DBEAFE", label: "Liquidado" },
+};
 
 const initials = (name: string) =>
   name
@@ -51,11 +102,18 @@ const initials = (name: string) =>
     .slice(0, 2)
     .toUpperCase() ?? "??";
 
+// ─────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────
 export default function HomeScreen() {
   const { persona, signOut, initialize } = useAuthStore();
   const { paseos, fetchPaseos } = useTripStore();
+  const router = useRouter();
 
-  const [notificaciones, setNotificaciones] = useState(true);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // ── Profile state ──
+  const [fullPersona, setFullPersona] = useState<any>(null);
   const [editing, setEditing] = useState(false);
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
@@ -63,10 +121,32 @@ export default function HomeScreen() {
   const [fotoUrl, setFotoUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const [fullPersona, setFullPersona] = useState<any>(null);
+  const [notificaciones, setNotificaciones] = useState(true);
 
+  // ── FAQ state ──
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
+
+  // ── Modals ──
+  const [showSignOutModal, setShowSignOutModal] = useState(false);
+  const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const showError = (msg: string) => {
+    setErrorMsg(msg);
+    setShowErrorModal(true);
+  };
+
+  // ─────────────────────────────────────────────
+  // Data loading
+  // ─────────────────────────────────────────────
   useEffect(() => {
-    loadFullPersona();
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+    if (persona?.id) loadFullPersona();
   }, [persona]);
 
   useFocusEffect(
@@ -76,21 +156,12 @@ export default function HomeScreen() {
   );
 
   const loadFullPersona = async () => {
-    if (!persona?.id) {
-      console.log("No persona id in auth store:", JSON.stringify(persona));
-      return;
-    }
-    console.log("Loading full persona for id:", persona.id);
-    const { data, error } = await supabase
+    if (!persona?.id) return;
+    const { data } = await supabase
       .from("personas")
       .select("*")
       .eq("id", persona.id)
       .single();
-    console.log(
-      "Full persona result:",
-      JSON.stringify(data),
-      JSON.stringify(error),
-    );
     if (data) {
       setFullPersona(data);
       setNombre(data.nombre ?? "");
@@ -102,10 +173,7 @@ export default function HomeScreen() {
 
   const handleSave = async () => {
     if (!fullPersona?.id) {
-      Alert.alert(
-        "Error",
-        "No se pudo identificar tu perfil. Intenta cerrar sesión y volver a entrar.",
-      );
+      showError("No se pudo identificar tu perfil.");
       return;
     }
     setSaving(true);
@@ -118,9 +186,8 @@ export default function HomeScreen() {
         foto_url: fotoUrl,
       })
       .eq("id", fullPersona.id);
-    if (error) {
-      Alert.alert("Error", error.message);
-    } else {
+    if (error) showError(error.message);
+    else {
       setEditing(false);
       loadFullPersona();
       initialize();
@@ -128,20 +195,13 @@ export default function HomeScreen() {
     setSaving(false);
   };
 
-  const handlePhotoOptions = () => {
-    Alert.alert("Foto de perfil", "¿Cómo quieres agregar la foto?", [
-      { text: "📷 Tomar foto", onPress: () => pickImage("camera") },
-      { text: "🖼️ Elegir de galería", onPress: () => pickImage("gallery") },
-      { text: "Cancelar", style: "cancel" },
-    ]);
-  };
-
   const pickImage = async (source: "camera" | "gallery") => {
+    setShowPhotoModal(false);
     let result;
     if (source === "camera") {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== "granted") {
-        Alert.alert("Permiso requerido", "Necesitamos acceso a tu cámara.");
+        showError("Necesitamos acceso a tu cámara.");
         return;
       }
       result = await ImagePicker.launchCameraAsync({
@@ -153,11 +213,11 @@ export default function HomeScreen() {
       const { status } =
         await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== "granted") {
-        Alert.alert("Permiso requerido", "Necesitamos acceso a tu galería.");
+        showError("Necesitamos acceso a tu galería.");
         return;
       }
       result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ["images"],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.7,
@@ -178,7 +238,7 @@ export default function HomeScreen() {
           upsert: true,
         });
       if (uploadError) {
-        Alert.alert("Error", uploadError.message);
+        showError(uploadError.message);
         setUploadingPhoto(false);
         return;
       }
@@ -191,60 +251,170 @@ export default function HomeScreen() {
         .from("personas")
         .update({ foto_url: publicUrl })
         .eq("id", persona!.id);
-    } catch (e) {
-      Alert.alert("Error", "No se pudo procesar la imagen.");
+    } catch {
+      showError("No se pudo procesar la imagen.");
     }
     setUploadingPhoto(false);
   };
 
-  const handleSignOut = () => {
-    Alert.alert("Cerrar sesión", "¿Estás seguro?", [
-      { text: "Cancelar", style: "cancel" },
-      { text: "Salir", style: "destructive", onPress: signOut },
-    ]);
-  };
-
-  const totalPaseos = paseos.length;
-  const activos = paseos.filter((p) => p.estado === "activo").length;
-  const planificacion = paseos.filter(
+  // ─────────────────────────────────────────────
+  // Derived
+  // ─────────────────────────────────────────────
+  const paseosActivos = paseos.filter((p) => p.estado === "activo");
+  const paseosPlanificacion = paseos.filter(
     (p) => p.estado === "planificacion",
-  ).length;
-  const cerrados = paseos.filter((p) => p.estado === "liquidado").length;
+  );
+  const paseosRecientes = [...paseosActivos, ...paseosPlanificacion].slice(
+    0,
+    3,
+  );
 
+  // ─────────────────────────────────────────────
+  // UNAUTHENTICATED view
+  // ─────────────────────────────────────────────
+  if (!persona) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Hero */}
+          <View style={styles.heroSection}>
+            <View style={styles.heroBadge}>
+              <Text style={styles.heroBadgeText}>
+                🏕️ Para grupos que viajan juntos
+              </Text>
+            </View>
+            <Text style={styles.heroTitle}>
+              Planea.{"\n"}Come bien.{"\n"}Cuadra cuentas.
+            </Text>
+            <Text style={styles.heroSub}>
+              PaseoApp organiza el menú, los gastos y las deudas de tu próximo
+              paseo — sin hojas de cálculo, sin peleas.
+            </Text>
+            <TouchableOpacity
+              style={styles.heroCTA}
+              onPress={() => router.push("/auth")}
+            >
+              <Text style={styles.heroCTAText}>Comenzar gratis →</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push("/auth")}>
+              <Text style={styles.heroSecondary}>
+                ¿Ya tienes cuenta? Inicia sesión
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Stats strip */}
+          <View style={styles.statsStrip}>
+            {[
+              ["🏕️", "Paseos"],
+              ["🍽️", "Recetas"],
+              ["👥", "Familias"],
+              ["💸", "Sin drama"],
+            ].map(([icon, label], i) => (
+              <View key={i} style={styles.stripItem}>
+                <Text style={styles.stripIcon}>{icon}</Text>
+                <Text style={styles.stripLabel}>{label}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Cómo funciona */}
+          <View style={styles.howSection}>
+            <Text style={styles.sectionHeading}>Cómo funciona</Text>
+            {HOW_IT_WORKS.map((item, i) => (
+              <View key={i} style={styles.howRow}>
+                <View style={styles.howStepBadge}>
+                  <Text style={styles.howStepText}>{item.step}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.howTitle}>{item.title}</Text>
+                  <Text style={styles.howDesc}>{item.desc}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+
+          {/* Testimonios */}
+          <View style={styles.testimoniosSection}>
+            <Text style={styles.sectionHeading}>Lo que dicen</Text>
+            {TESTIMONIOS.map((t, i) => (
+              <View key={i} style={styles.testimonioCard}>
+                <Text style={styles.testimonioEmoji}>{t.emoji}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.testimonioTexto}>"{t.texto}"</Text>
+                  <Text style={styles.testimonioNombre}>— {t.nombre}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+
+          {/* CTA final */}
+          <View style={styles.ctaFinalSection}>
+            <Text style={styles.ctaFinalTitle}>
+              ¿Listo para tu próximo paseo?
+            </Text>
+            <TouchableOpacity
+              style={styles.heroCTA}
+              onPress={() => router.push("/auth")}
+            >
+              <Text style={styles.heroCTAText}>Crear cuenta gratis →</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.footerText}>
+            PaseoApp v{VERSION} · Hecho con ❤️ en Colombia
+          </Text>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // AUTHENTICATED view
+  // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* ── PROFILE CARD ── */}
+      <Animated.ScrollView
+        style={{ opacity: fadeAnim }}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── PERFIL ── */}
         <View style={styles.profileCard}>
-          <View style={styles.profileCardTop}>
+          <View style={styles.profileTop}>
             <TouchableOpacity
-              onPress={handlePhotoOptions}
-              style={styles.avatarContainer}
+              onPress={() => setShowPhotoModal(true)}
+              style={styles.avatarWrap}
             >
               {uploadingPhoto ? (
-                <View style={styles.avatarLarge}>
+                <View style={styles.avatar}>
                   <ActivityIndicator color="#fff" />
                 </View>
               ) : fotoUrl ? (
-                <Image source={{ uri: fotoUrl }} style={styles.avatarImage} />
+                <Image source={{ uri: fotoUrl }} style={styles.avatarImg} />
               ) : (
-                <View style={styles.avatarLarge}>
-                  <Text style={styles.avatarText}>{initials(nombre)}</Text>
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>
+                    {initials(nombre || persona?.nombre || "?")}
+                  </Text>
                 </View>
               )}
-              <View style={styles.avatarCameraIcon}>
-                <Text style={{ fontSize: 12 }}>📷</Text>
+              <View style={styles.avatarCam}>
+                <Text style={{ fontSize: 10 }}>📷</Text>
               </View>
             </TouchableOpacity>
 
-            <View style={styles.profileInfo}>
+            <View style={{ flex: 1 }}>
               {editing ? (
                 <TextInput
                   style={styles.nameInput}
                   value={nombre}
                   onChangeText={setNombre}
                   placeholder="Tu nombre"
-                  placeholderTextColor="rgba(255,255,255,0.5)"
+                  placeholderTextColor="rgba(255,255,255,0.4)"
                 />
               ) : (
                 <Text style={styles.profileName}>
@@ -254,10 +424,12 @@ export default function HomeScreen() {
               <Text style={styles.profileEmail}>
                 {fullPersona?.email ?? ""}
               </Text>
-              {fullPersona?.telefono ? (
-                <Text style={styles.profilePhone}>
-                  📱 {fullPersona.telefono}
-                </Text>
+              {!editing && fullPersona?.restricciones_alimentarias ? (
+                <View style={styles.restriccionesBadge}>
+                  <Text style={styles.restriccionesText}>
+                    ⚠️ {fullPersona.restricciones_alimentarias}
+                  </Text>
+                </View>
               ) : null}
             </View>
           </View>
@@ -269,15 +441,15 @@ export default function HomeScreen() {
                 value={telefono}
                 onChangeText={setTelefono}
                 placeholder="Teléfono"
-                placeholderTextColor="rgba(255,255,255,0.5)"
+                placeholderTextColor="rgba(255,255,255,0.4)"
                 keyboardType="phone-pad"
               />
               <TextInput
                 style={styles.editInput}
                 value={restricciones}
                 onChangeText={setRestricciones}
-                placeholder="Restricciones alimentarias"
-                placeholderTextColor="rgba(255,255,255,0.5)"
+                placeholder="Restricciones alimentarias (opcional)"
+                placeholderTextColor="rgba(255,255,255,0.4)"
               />
             </View>
           )}
@@ -312,61 +484,146 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* ── MY TRIPS SUMMARY ── */}
+        {/* ── ACCESOS RÁPIDOS ── */}
+        <View style={styles.quickRow}>
+          <TouchableOpacity
+            style={styles.quickCard}
+            onPress={() => router.push("/trips" as any)}
+          >
+            <Text style={styles.quickIcon}>🏕️</Text>
+            <Text style={styles.quickLabel}>Mis paseos</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickCard}
+            onPress={() => router.push("/recipes" as any)}
+          >
+            <Text style={styles.quickIcon}>📖</Text>
+            <Text style={styles.quickLabel}>Recetas</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickCard}
+            onPress={() => router.push("/grocery" as any)}
+          >
+            <Text style={styles.quickIcon}>🛒</Text>
+            <Text style={styles.quickLabel}>Mercado</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickCard}
+            onPress={() => router.push("/expenses" as any)}
+          >
+            <Text style={styles.quickIcon}>💸</Text>
+            <Text style={styles.quickLabel}>Gastos</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ── PASEOS RECIENTES ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📊 Mis Paseos</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Paseos activos</Text>
+            <TouchableOpacity onPress={() => router.push("/trips" as any)}>
+              <Text style={styles.sectionLink}>Ver todos →</Text>
+            </TouchableOpacity>
+          </View>
+
+          {paseosRecientes.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>🏕️</Text>
+              <Text style={styles.emptyTitle}>Sin paseos aún</Text>
+              <Text style={styles.emptySub}>
+                Ve a Mis Paseos para crear el primero
+              </Text>
+            </View>
+          ) : (
+            paseosRecientes.map((p) => {
+              const cfg =
+                ESTADO_CONFIG[p.estado] ?? ESTADO_CONFIG["planificacion"];
+              return (
+                <TouchableOpacity
+                  key={p.id}
+                  style={styles.paseoRow}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/tripDetail",
+                      params: { id: p.id },
+                    })
+                  }
+                >
+                  <View style={styles.paseoRowLeft}>
+                    {p.foto_url ? (
+                      <Image
+                        source={{ uri: p.foto_url }}
+                        style={styles.paseoThumb}
+                      />
+                    ) : (
+                      <View style={styles.paseoThumbPlaceholder}>
+                        <Text style={{ fontSize: 20 }}>🏕️</Text>
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.paseoNombre} numberOfLines={1}>
+                        {p.nombre}
+                      </Text>
+                      <Text style={styles.paseoFecha}>
+                        {p.lugar ?? ""} · {p.fecha_inicio} → {p.fecha_fin}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={{ alignItems: "flex-end", gap: 4 }}>
+                    <View
+                      style={[styles.estadoBadge, { backgroundColor: cfg.bg }]}
+                    >
+                      <Text style={[styles.estadoText, { color: cfg.color }]}>
+                        {cfg.label}
+                      </Text>
+                    </View>
+                    <Text style={styles.chevron}>›</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })
+          )}
+        </View>
+
+        {/* ── ACTIVIDAD RECIENTE (stats) ── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Resumen</Text>
           <View style={styles.statsRow}>
-            <View style={styles.statBox}>
-              <Text style={styles.statVal}>{totalPaseos}</Text>
-              <Text style={styles.statLabel}>Total</Text>
-            </View>
-            <View
-              style={[
-                styles.statBox,
-                { borderLeftWidth: 1, borderColor: "#e2e8f0" },
-              ]}
-            >
-              <Text style={[styles.statVal, { color: "#16a34a" }]}>
-                {activos}
-              </Text>
-              <Text style={styles.statLabel}>Activos</Text>
-            </View>
-            <View
-              style={[
-                styles.statBox,
-                { borderLeftWidth: 1, borderColor: "#e2e8f0" },
-              ]}
-            >
-              <Text style={[styles.statVal, { color: "#B45309" }]}>
-                {planificacion}
-              </Text>
-              <Text style={styles.statLabel}>Planeando</Text>
-            </View>
-            <View
-              style={[
-                styles.statBox,
-                { borderLeftWidth: 1, borderColor: "#e2e8f0" },
-              ]}
-            >
-              <Text style={[styles.statVal, { color: "#6D28D9" }]}>
-                {cerrados}
-              </Text>
-              <Text style={styles.statLabel}>Cerrados</Text>
-            </View>
+            {[
+              { val: paseos.length, label: "Paseos", color: "#1B4F72" },
+              { val: paseosActivos.length, label: "Activos", color: "#065F46" },
+              {
+                val: paseosPlanificacion.length,
+                label: "Planeando",
+                color: "#B45309",
+              },
+              {
+                val: paseos.filter((p) => p.estado === "liquidado").length,
+                label: "Liquidados",
+                color: "#6D28D9",
+              },
+            ].map((s, i) => (
+              <View
+                key={i}
+                style={[styles.statBox, i > 0 && styles.statBoxBorder]}
+              >
+                <Text style={[styles.statVal, { color: s.color }]}>
+                  {s.val}
+                </Text>
+                <Text style={styles.statLabel}>{s.label}</Text>
+              </View>
+            ))}
           </View>
         </View>
 
-        {/* ── SETTINGS ── */}
+        {/* ── CONFIGURACIÓN ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>⚙️ Configuración</Text>
+          <Text style={styles.sectionTitle}>Configuración</Text>
           <View style={styles.settingRow}>
             <View style={styles.settingLeft}>
               <Text style={styles.settingIcon}>🔔</Text>
               <View>
                 <Text style={styles.settingLabel}>Notificaciones</Text>
-                <Text style={styles.settingSub}>
-                  Avisos de gastos y cambios al menú
-                </Text>
+                <Text style={styles.settingSub}>Gastos y cambios al menú</Text>
               </View>
             </View>
             <Switch
@@ -376,7 +633,7 @@ export default function HomeScreen() {
               thumbColor="#fff"
             />
           </View>
-          <TouchableOpacity style={styles.settingRow}>
+          <View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
             <View style={styles.settingLeft}>
               <Text style={styles.settingIcon}>🌍</Text>
               <View>
@@ -385,137 +642,337 @@ export default function HomeScreen() {
               </View>
             </View>
             <Text style={styles.settingArrow}>›</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.settingRow}>
-            <View style={styles.settingLeft}>
-              <Text style={styles.settingIcon}>🔒</Text>
-              <View>
-                <Text style={styles.settingLabel}>Cambiar contraseña</Text>
-                <Text style={styles.settingSub}>Actualiza tu contraseña</Text>
-              </View>
-            </View>
-            <Text style={styles.settingArrow}>›</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ── SUBSCRIPTION ── */}
-        <View style={styles.subscriptionCard}>
-          <View>
-            <Text style={styles.subscriptionBadge}>GRATIS</Text>
-            <Text style={styles.subscriptionTitle}>Plan Gratuito</Text>
-            <Text style={styles.subscriptionSub}>Hasta 3 paseos activos</Text>
           </View>
-          <TouchableOpacity style={styles.upgradeButton}>
-            <Text style={styles.upgradeButtonText}>✨ Pro</Text>
-          </TouchableOpacity>
         </View>
 
-        {/* ── WHAT'S NEW ── */}
+        {/* ── FAQ ── */}
         <View style={styles.section}>
-          <View
-            style={{
-              flexDirection: "row",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: 14,
-            }}
-          >
-            <Text style={styles.sectionTitle}>🚀 Novedades</Text>
-            <Text style={{ fontSize: 12, color: "#94a3b8" }}>v{VERSION}</Text>
-          </View>
-          {WHATS_NEW.map((item, i) => (
-            <View key={i} style={styles.newFeatureRow}>
-              <Text style={styles.newFeatureIcon}>{item.icon}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.newFeatureTitle}>{item.title}</Text>
-                <Text style={styles.newFeatureDesc}>{item.desc}</Text>
+          <Text style={styles.sectionTitle}>Preguntas frecuentes</Text>
+          {FAQ.map((item, i) => (
+            <TouchableOpacity
+              key={i}
+              style={[
+                styles.faqItem,
+                i === FAQ.length - 1 && { borderBottomWidth: 0 },
+              ]}
+              onPress={() => setOpenFaq(openFaq === i ? null : i)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.faqHeader}>
+                <Text style={styles.faqQ}>{item.q}</Text>
+                <Text style={styles.faqChevron}>
+                  {openFaq === i ? "↑" : "↓"}
+                </Text>
               </View>
-            </View>
+              {openFaq === i && <Text style={styles.faqA}>{item.a}</Text>}
+            </TouchableOpacity>
           ))}
         </View>
 
-        {/* ── LOGOUT ── */}
-        <TouchableOpacity style={styles.logoutButton} onPress={handleSignOut}>
-          <Text style={styles.logoutText}>🚪 Cerrar sesión</Text>
+        {/* ── CERRAR SESIÓN ── */}
+        <TouchableOpacity
+          style={styles.logoutBtn}
+          onPress={() => setShowSignOutModal(true)}
+        >
+          <Text style={styles.logoutText}>Cerrar sesión</Text>
         </TouchableOpacity>
 
         <Text style={styles.footerText}>
           PaseoApp v{VERSION} · Hecho con ❤️ en Colombia
         </Text>
-      </ScrollView>
+      </Animated.ScrollView>
+
+      {/* ── MODALS ── */}
+
+      {/* Sign out confirm */}
+      <Modal
+        visible={showSignOutModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSignOutModal(false)}
+      >
+        <View style={styles.overlay}>
+          <View style={styles.confirmBox}>
+            <Text style={styles.confirmTitle}>Cerrar sesión</Text>
+            <Text style={styles.confirmMsg}>
+              ¿Estás seguro de que quieres salir?
+            </Text>
+            <TouchableOpacity
+              style={[styles.confirmBtn, { backgroundColor: "#DC2626" }]}
+              onPress={() => {
+                setShowSignOutModal(false);
+                signOut();
+              }}
+            >
+              <Text style={styles.confirmBtnText}>Salir</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.confirmCancel}
+              onPress={() => setShowSignOutModal(false)}
+            >
+              <Text style={styles.confirmCancelText}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Photo source */}
+      <Modal
+        visible={showPhotoModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPhotoModal(false)}
+      >
+        <View style={styles.overlay}>
+          <View style={styles.sheetBox}>
+            <Text style={styles.sheetTitle}>Foto de perfil</Text>
+            <TouchableOpacity
+              style={styles.sheetOption}
+              onPress={() => pickImage("camera")}
+            >
+              <Text style={styles.sheetOptionText}>📷 Tomar foto</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.sheetOption}
+              onPress={() => pickImage("gallery")}
+            >
+              <Text style={styles.sheetOptionText}>🖼️ Elegir de galería</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.sheetCancel}
+              onPress={() => setShowPhotoModal(false)}
+            >
+              <Text style={styles.sheetCancelText}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Error */}
+      <Modal
+        visible={showErrorModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowErrorModal(false)}
+      >
+        <View style={styles.overlay}>
+          <View style={styles.confirmBox}>
+            <Text style={styles.confirmTitle}>⚠️ Error</Text>
+            <Text style={styles.confirmMsg}>{errorMsg}</Text>
+            <TouchableOpacity
+              style={[styles.confirmBtn, { backgroundColor: "#1B4F72" }]}
+              onPress={() => setShowErrorModal(false)}
+            >
+              <Text style={styles.confirmBtnText}>Entendido</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
+// ─────────────────────────────────────────────
+// Styles
+// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f1f5f9" },
-  content: { padding: 16, paddingBottom: 40 },
+  container: { flex: 1, backgroundColor: "#f8fafc" },
+  content: { padding: 20, paddingBottom: 48 },
 
+  // ── Unauthenticated ──────────────────────────
+  heroSection: { paddingVertical: 32, alignItems: "flex-start" },
+  heroBadge: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    marginBottom: 20,
+  },
+  heroBadgeText: { fontSize: 12, fontWeight: "600", color: "#1D4ED8" },
+  heroTitle: {
+    fontSize: 40,
+    fontWeight: "800",
+    color: "#0f172a",
+    lineHeight: 46,
+    marginBottom: 16,
+    letterSpacing: -1,
+  },
+  heroSub: { fontSize: 16, color: "#475569", lineHeight: 24, marginBottom: 28 },
+  heroCTA: {
+    backgroundColor: "#0f172a",
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 28,
+    alignSelf: "stretch",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  heroCTAText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  heroSecondary: {
+    fontSize: 14,
+    color: "#64748b",
+    textAlign: "center",
+    alignSelf: "center",
+  },
+
+  statsStrip: {
+    flexDirection: "row",
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 32,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  stripItem: { flex: 1, alignItems: "center", gap: 4 },
+  stripIcon: { fontSize: 22 },
+  stripLabel: { fontSize: 11, color: "#64748b", fontWeight: "600" },
+
+  howSection: { marginBottom: 32 },
+  sectionHeading: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginBottom: 20,
+    letterSpacing: -0.5,
+  },
+  howRow: {
+    flexDirection: "row",
+    gap: 16,
+    marginBottom: 20,
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  howStepBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#0f172a",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  howStepText: { color: "#fff", fontSize: 11, fontWeight: "800" },
+  howTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#1e293b",
+    marginBottom: 4,
+  },
+  howDesc: { fontSize: 13, color: "#64748b", lineHeight: 18 },
+
+  testimoniosSection: { marginBottom: 32 },
+  testimonioCard: {
+    flexDirection: "row",
+    gap: 14,
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  testimonioEmoji: { fontSize: 28, flexShrink: 0, marginTop: 2 },
+  testimonioTexto: {
+    fontSize: 14,
+    color: "#334155",
+    lineHeight: 20,
+    marginBottom: 6,
+    fontStyle: "italic",
+  },
+  testimonioNombre: { fontSize: 12, fontWeight: "700", color: "#94a3b8" },
+
+  ctaFinalSection: { alignItems: "stretch", marginBottom: 32 },
+  ctaFinalTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+
+  // ── Authenticated ────────────────────────────
   profileCard: {
     backgroundColor: "#1B4F72",
     borderRadius: 20,
     padding: 20,
     marginBottom: 16,
   },
-  profileCardTop: {
+  profileTop: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 16,
+    gap: 14,
     marginBottom: 16,
   },
-  avatarContainer: { position: "relative" },
-  avatarLarge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: "rgba(255,255,255,0.25)",
+  avatarWrap: { position: "relative" },
+  avatar: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarImage: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+  avatarImg: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.4)",
+    borderColor: "rgba(255,255,255,0.3)",
   },
-  avatarText: { color: "#fff", fontSize: 24, fontWeight: "800" },
-  avatarCameraIcon: {
+  avatarText: { color: "#fff", fontSize: 22, fontWeight: "800" },
+  avatarCam: {
     position: "absolute",
     bottom: 0,
     right: 0,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
   },
-  profileInfo: { flex: 1 },
   profileName: {
     color: "#fff",
-    fontSize: 20,
+    fontSize: 19,
     fontWeight: "800",
     marginBottom: 2,
   },
-  profileEmail: {
-    color: "rgba(255,255,255,0.7)",
-    fontSize: 12,
-    marginBottom: 2,
+  profileEmail: { color: "rgba(255,255,255,0.6)", fontSize: 12 },
+  restriccionesBadge: {
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 6,
+    alignSelf: "flex-start",
   },
-  profilePhone: { color: "rgba(255,255,255,0.7)", fontSize: 12 },
+  restriccionesText: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 11,
+    fontWeight: "600",
+  },
   nameInput: {
     color: "#fff",
     fontSize: 18,
     fontWeight: "800",
-    borderBottomWidth: 2,
+    borderBottomWidth: 1.5,
     borderBottomColor: "rgba(255,255,255,0.4)",
     paddingBottom: 2,
     marginBottom: 4,
   },
-  editFields: { gap: 8, marginBottom: 16 },
+  editFields: { gap: 8, marginBottom: 14 },
   editInput: {
-    backgroundColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(255,255,255,0.12)",
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -525,7 +982,7 @@ const styles = StyleSheet.create({
   profileActions: { flexDirection: "row", gap: 8 },
   editBtn: {
     flex: 1,
-    backgroundColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(255,255,255,0.15)",
     borderRadius: 10,
     padding: 10,
     alignItems: "center",
@@ -541,106 +998,212 @@ const styles = StyleSheet.create({
   saveBtnText: { color: "#1B4F72", fontWeight: "800", fontSize: 13 },
   cancelBtn: {
     flex: 1,
-    backgroundColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(255,255,255,0.12)",
     borderRadius: 10,
     padding: 10,
     alignItems: "center",
   },
   cancelBtnText: {
-    color: "rgba(255,255,255,0.8)",
+    color: "rgba(255,255,255,0.75)",
     fontWeight: "600",
     fontSize: 13,
   },
 
-  section: {
+  // Quick access
+  quickRow: { flexDirection: "row", gap: 10, marginBottom: 16 },
+  quickCard: {
+    flex: 1,
     backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
+    borderRadius: 14,
+    padding: 14,
+    alignItems: "center",
+    gap: 6,
     shadowColor: "#000",
     shadowOpacity: 0.05,
     shadowRadius: 4,
     elevation: 2,
   },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#1e293b",
+  quickIcon: { fontSize: 24 },
+  quickLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#475569",
+    textAlign: "center",
+  },
+
+  // Section
+  section: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 14,
   },
+  sectionTitle: { fontSize: 14, fontWeight: "700", color: "#1e293b" },
+  sectionLink: { fontSize: 13, color: "#1B4F72", fontWeight: "600" },
 
-  statsRow: { flexDirection: "row" },
-  statBox: { flex: 1, alignItems: "center", paddingVertical: 8 },
-  statVal: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: "#1B4F72",
-    marginBottom: 2,
-  },
-  statLabel: { fontSize: 12, color: "#94a3b8", fontWeight: "500" },
-
-  settingRow: {
+  // Paseos
+  emptyState: { alignItems: "center", paddingVertical: 24, gap: 6 },
+  emptyIcon: { fontSize: 36 },
+  emptyTitle: { fontSize: 15, fontWeight: "700", color: "#1e293b" },
+  emptySub: { fontSize: 13, color: "#94a3b8", textAlign: "center" },
+  paseoRow: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    alignItems: "center",
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#f1f5f9",
   },
-  settingLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-  settingIcon: { fontSize: 22 },
-  settingLabel: { fontSize: 14, fontWeight: "600", color: "#1e293b" },
-  settingSub: { fontSize: 12, color: "#94a3b8", marginTop: 1 },
-  settingArrow: { fontSize: 22, color: "#cbd5e1" },
-
-  subscriptionCard: {
-    backgroundColor: "#1e293b",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
+  paseoRowLeft: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 10,
+    flex: 1,
   },
-  subscriptionBadge: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#94a3b8",
-    letterSpacing: 1,
-    marginBottom: 2,
+  paseoThumb: { width: 42, height: 42, borderRadius: 10 },
+  paseoThumbPlaceholder: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: "#f1f5f9",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  subscriptionTitle: { fontSize: 16, fontWeight: "700", color: "#fff" },
-  subscriptionSub: { fontSize: 12, color: "#64748b" },
-  upgradeButton: {
-    backgroundColor: "#F59E0B",
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  upgradeButtonText: { color: "#fff", fontWeight: "800", fontSize: 14 },
-
-  newFeatureRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: 12,
-    alignItems: "flex-start",
-  },
-  newFeatureIcon: { fontSize: 22, marginTop: 1 },
-  newFeatureTitle: {
+  paseoNombre: {
     fontSize: 14,
     fontWeight: "700",
     color: "#1e293b",
     marginBottom: 2,
   },
-  newFeatureDesc: { fontSize: 12, color: "#64748b", lineHeight: 18 },
+  paseoFecha: { fontSize: 11, color: "#94a3b8" },
+  estadoBadge: { borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
+  estadoText: { fontSize: 10, fontWeight: "700" },
+  chevron: { fontSize: 18, color: "#cbd5e1" },
 
-  logoutButton: {
-    backgroundColor: "#dc2626",
+  // Stats
+  statsRow: { flexDirection: "row" },
+  statBox: { flex: 1, alignItems: "center", paddingVertical: 6 },
+  statBoxBorder: { borderLeftWidth: 1, borderLeftColor: "#f1f5f9" },
+  statVal: { fontSize: 22, fontWeight: "800", marginBottom: 2 },
+  statLabel: { fontSize: 11, color: "#94a3b8", fontWeight: "500" },
+
+  // Settings
+  settingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f8fafc",
+  },
+  settingLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
+  settingIcon: { fontSize: 20 },
+  settingLabel: { fontSize: 14, fontWeight: "600", color: "#1e293b" },
+  settingSub: { fontSize: 12, color: "#94a3b8", marginTop: 1 },
+  settingArrow: { fontSize: 20, color: "#cbd5e1" },
+
+  // FAQ
+  faqItem: {
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f8fafc",
+  },
+  faqHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  faqQ: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#1e293b",
+    flex: 1,
+    paddingRight: 8,
+  },
+  faqChevron: { fontSize: 14, color: "#94a3b8", fontWeight: "600" },
+  faqA: { fontSize: 13, color: "#64748b", lineHeight: 19, marginTop: 8 },
+
+  // Logout
+  logoutBtn: {
+    borderWidth: 1.5,
+    borderColor: "#e2e8f0",
     borderRadius: 14,
-    padding: 16,
+    padding: 14,
     alignItems: "center",
     marginBottom: 16,
   },
-  logoutText: { color: "#fff", fontSize: 16, fontWeight: "800" },
+  logoutText: { fontSize: 14, fontWeight: "600", color: "#64748b" },
+
   footerText: { textAlign: "center", fontSize: 11, color: "#cbd5e1" },
+
+  // Modals
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  confirmBox: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 24,
+    width: "84%",
+  },
+  confirmTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#1e293b",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  confirmMsg: {
+    fontSize: 14,
+    color: "#64748b",
+    textAlign: "center",
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  confirmBtn: {
+    borderRadius: 12,
+    padding: 14,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  confirmBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  confirmCancel: { alignItems: "center", paddingVertical: 4 },
+  confirmCancelText: { color: "#64748b", fontSize: 14 },
+
+  sheetBox: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 24,
+    width: "84%",
+  },
+  sheetTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#1e293b",
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  sheetOption: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 12,
+    padding: 14,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  sheetOptionText: { fontSize: 15, fontWeight: "700", color: "#1B4F72" },
+  sheetCancel: { alignItems: "center", marginTop: 4 },
+  sheetCancelText: { color: "#64748b", fontSize: 14 },
 });

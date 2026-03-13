@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import * as SecureStore from "expo-secure-store";
+import { AppState } from "react-native";
 import "react-native-url-polyfill/auto";
 
 const ExpoSecureStoreAdapter = {
@@ -19,4 +20,15 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: true,
     flowType: "pkce",
   },
+});
+
+// Tells Supabase to pause/resume token refresh based on app state.
+// This prevents the session from expiring when the app is in background
+// (e.g. after opening the Share sheet) and ensures it resumes correctly.
+AppState.addEventListener("change", (state) => {
+  if (state === "active") {
+    supabase.auth.startAutoRefresh();
+  } else {
+    supabase.auth.stopAutoRefresh();
+  }
 });

@@ -23,6 +23,21 @@ export interface Receta {
   porciones_base: number;
   descripcion?: string;
   es_publica: boolean;
+  es_vegano?: boolean;
+  es_vegetariano?: boolean;
+  es_picante?: boolean;
+  contiene_nueces?: boolean;
+  sin_gluten?: boolean;
+  sin_lactosa?: boolean;
+  categoria?: string;
+  instrucciones?: string;
+  // Campos nuevos
+  foto_url?: string | null;
+  tiempo_preparacion?: number | null;
+  tiempo_coccion?: number | null;
+  creditos?: string | null;
+  utensilios?: string[] | null;
+  palabras_clave?: string[] | null;
   receta_ingredientes?: RecetaIngrediente[];
 }
 
@@ -45,8 +60,7 @@ export const useRecipeStore = create<RecipeStore>((set) => ({
     const { data, error } = await supabase
       .from("recetas")
       .select("*")
-      .order("tipo_comida")
-      .order("nombre");
+      .order("nombre"); // alfabético, coincide con el índice del tab
 
     if (error) {
       set({ error: error.message, loading: false });
@@ -59,8 +73,7 @@ export const useRecipeStore = create<RecipeStore>((set) => ({
     const { data, error } = await supabase
       .from("recetas")
       .select(
-        `
-        *,
+        `*,
         receta_ingredientes (
           id,
           cantidad_por_porcion,
@@ -68,8 +81,7 @@ export const useRecipeStore = create<RecipeStore>((set) => ({
           ingredientes (
             id, nombre, unidad_base, categoria, observaciones
           )
-        )
-      `,
+        )`,
       )
       .eq("id", id)
       .single();

@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -16,6 +16,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../src/lib/supabase";
 import { useTripStore } from "../src/store/useTripStore";
 
+// ─────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────
 const TIPO_CONFIG: Record<
   string,
   { icon: string; color: string; bgColor: string }
@@ -24,6 +27,8 @@ const TIPO_CONFIG: Record<
   almuerzo: { icon: "🍽️", color: "#1D4ED8", bgColor: "#DBEAFE" },
   cena: { icon: "🌙", color: "#6D28D9", bgColor: "#EDE9FE" },
   snack: { icon: "🥐", color: "#065F46", bgColor: "#D1FAE5" },
+  "medias nueves": { icon: "🥪", color: "#B45309", bgColor: "#FEF3C7" },
+  onces: { icon: "🍵", color: "#065F46", bgColor: "#D1FAE5" },
 };
 
 const TAGS = [
@@ -55,6 +60,9 @@ const TAGS = [
   },
 ];
 
+// ─────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────
 export default function RecipeDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -64,12 +72,24 @@ export default function RecipeDetailScreen() {
   const [ingredientes, setIngredientes] = useState<any[]>([]);
   const [porciones, setPorciones] = useState(4);
   const [loading, setLoading] = useState(true);
+
+  // Add to trip
   const [showAddToTripModal, setShowAddToTripModal] = useState(false);
   const [selectedPaseoId, setSelectedPaseoId] = useState<string | null>(null);
   const [selectedFecha, setSelectedFecha] = useState<string | null>(null);
   const [selectedTipo, setSelectedTipo] = useState("almuerzo");
   const [fechas, setFechas] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
+
+  // Modals
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
+  const showError = (msg: string) => {
+    setErrorMsg(msg);
+    setShowErrorModal(true);
+  };
 
   useEffect(() => {
     loadReceta();
@@ -99,62 +119,52 @@ export default function RecipeDetailScreen() {
       .select("*")
       .eq("id", id)
       .single();
-
     if (recetaData) {
       setReceta(recetaData);
       setPorciones(recetaData.porciones_base ?? 4);
     }
-
     const { data: ingData } = await supabase
       .from("receta_ingredientes")
       .select("*, ingredientes(nombre, unidad_base)")
       .eq("receta_id", id);
-
     setIngredientes(ingData ?? []);
     setLoading(false);
   };
 
   const handleAddToTrip = async () => {
     if (!selectedPaseoId || !selectedFecha) {
-      Alert.alert("Error", "Selecciona un paseo y una fecha.");
+      showError("Selecciona un paseo y una fecha.");
       return;
     }
     setAdding(true);
-
-    // Count participants in the selected trip
     const { data: partData } = await supabase
       .from("participaciones")
       .select("id")
       .eq("paseo_id", selectedPaseoId);
-
-    const numParticipantes = partData?.length ?? 1;
-    console.log("Participantes en el paseo:", numParticipantes);
-
     const { error } = await supabase.from("momentos_comida").insert({
       paseo_id: selectedPaseoId,
       fecha: selectedFecha,
       tipo_comida: selectedTipo,
       receta_id: id,
-      porciones: numParticipantes,
+      porciones: partData?.length ?? 1,
     });
-    if (error) {
-      Alert.alert("Error", error.message);
-    } else {
-      setShowAddToTripModal(false);
-      Alert.alert("✓ Agregado", "Receta agregada al menú del paseo.");
-    }
     setAdding(false);
+    if (error) {
+      showError(error.message);
+      return;
+    }
+    setShowAddToTripModal(false);
+    setShowSuccessModal(true);
   };
 
-  const scaledAmount = (cantidad: number) => {
-    // cantidad is already per single portion, just multiply by selected portions
-    const scaled = cantidad * porciones;
-    return Math.round(scaled * 100) / 100;
-  };
+  const scaledAmount = (cantidad: number) =>
+    Math.round(cantidad * porciones * 100) / 100;
 
   const activeTags = TAGS.filter((t) => receta?.[t.key]);
   const tipoConfig =
     TIPO_CONFIG[receta?.tipo_comida] ?? TIPO_CONFIG["almuerzo"];
+  const tiempoTotal =
+    (receta?.tiempo_preparacion ?? 0) + (receta?.tiempo_coccion ?? 0);
 
   if (loading) {
     return (
@@ -185,6 +195,16 @@ export default function RecipeDetailScreen() {
               <Text style={styles.editText}>✏️ Editar</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Foto hero */}
+          {receta?.foto_url ? (
+            <Image
+              source={{ uri: receta.foto_url }}
+              style={styles.fotoHero}
+              resizeMode="cover"
+            />
+          ) : null}
+
           <View
             style={[styles.tipoBadge, { backgroundColor: tipoConfig.bgColor }]}
           >
@@ -195,13 +215,46 @@ export default function RecipeDetailScreen() {
             </Text>
           </View>
           <Text style={styles.headerTitle}>{receta?.nombre}</Text>
-          {receta?.descripcion && (
+          {receta?.descripcion ? (
             <Text style={styles.headerDesc}>{receta.descripcion}</Text>
-          )}
+          ) : null}
+
+          {/* Meta row: tiempos + porciones */}
+          <View style={styles.headerMeta}>
+            {tiempoTotal > 0 && (
+              <View style={styles.headerMetaChip}>
+                <Text style={styles.headerMetaText}>⏱ {tiempoTotal} min</Text>
+              </View>
+            )}
+            {receta?.tiempo_preparacion > 0 && (
+              <View style={styles.headerMetaChip}>
+                <Text style={styles.headerMetaText}>
+                  🔪 Prep: {receta.tiempo_preparacion} min
+                </Text>
+              </View>
+            )}
+            {receta?.tiempo_coccion > 0 && (
+              <View style={styles.headerMetaChip}>
+                <Text style={styles.headerMetaText}>
+                  🔥 Cocción: {receta.tiempo_coccion} min
+                </Text>
+              </View>
+            )}
+            <View style={styles.headerMetaChip}>
+              <Text style={styles.headerMetaText}>
+                👤 {receta?.porciones_base} porciones base
+              </Text>
+            </View>
+          </View>
+
+          {/* Créditos */}
+          {receta?.creditos ? (
+            <Text style={styles.creditosText}>✍️ {receta.creditos}</Text>
+          ) : null}
         </View>
 
         <ScrollView contentContainerStyle={styles.content}>
-          {/* TAGS */}
+          {/* TAGS dietéticos */}
           {activeTags.length > 0 && (
             <View style={styles.tagsRow}>
               {activeTags.map((tag) => (
@@ -217,7 +270,35 @@ export default function RecipeDetailScreen() {
             </View>
           )}
 
-          {/* PORTION SCALER */}
+          {/* Palabras clave */}
+          {(receta?.palabras_clave ?? []).length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🔖 Palabras clave</Text>
+              <View style={styles.kwRow}>
+                {(receta.palabras_clave as string[]).map((kw) => (
+                  <View key={kw} style={styles.kwTag}>
+                    <Text style={styles.kwTagText}>{kw}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* Utensilios */}
+          {(receta?.utensilios ?? []).length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🍳 Equipos y utensilios</Text>
+              <View style={styles.kwRow}>
+                {(receta.utensilios as string[]).map((u) => (
+                  <View key={u} style={styles.utensilioTag}>
+                    <Text style={styles.utensilioTagText}>{u}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* PORCIONES scaler */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>🍽️ Porciones</Text>
             <View style={styles.scalerRow}>
@@ -249,7 +330,7 @@ export default function RecipeDetailScreen() {
             )}
           </View>
 
-          {/* INGREDIENTS */}
+          {/* INGREDIENTES */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>🛒 Ingredientes</Text>
             {ingredientes.length === 0 ? (
@@ -277,7 +358,7 @@ export default function RecipeDetailScreen() {
             )}
           </View>
 
-          {/* INSTRUCTIONS */}
+          {/* PREPARACIÓN */}
           {receta?.instrucciones && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>📋 Preparación</Text>
@@ -296,7 +377,7 @@ export default function RecipeDetailScreen() {
           )}
         </ScrollView>
 
-        {/* ADD TO TRIP BUTTON */}
+        {/* FOOTER */}
         <View style={styles.footer}>
           <TouchableOpacity
             style={styles.addToTripBtn}
@@ -308,7 +389,53 @@ export default function RecipeDetailScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* ADD TO TRIP MODAL */}
+        {/* ══ MODALS ══ */}
+
+        {/* Error */}
+        <Modal
+          visible={showErrorModal}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setShowErrorModal(false)}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>⚠️ Error</Text>
+              <Text style={styles.modalMsg}>{errorMsg}</Text>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: "#1B4F72" }]}
+                onPress={() => setShowErrorModal(false)}
+              >
+                <Text style={styles.modalBtnText}>Entendido</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Success agregar */}
+        <Modal
+          visible={showSuccessModal}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setShowSuccessModal(false)}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>✅ Agregado</Text>
+              <Text style={styles.modalMsg}>
+                Receta agregada al menú del paseo.
+              </Text>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: "#16a34a" }]}
+                onPress={() => setShowSuccessModal(false)}
+              >
+                <Text style={styles.modalBtnText}>OK</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Add to trip */}
         <Modal
           visible={showAddToTripModal}
           animationType="slide"
@@ -320,16 +447,14 @@ export default function RecipeDetailScreen() {
               <TouchableOpacity onPress={() => setShowAddToTripModal(false)}>
                 <Text style={styles.modalCancel}>Cancelar</Text>
               </TouchableOpacity>
-              <Text style={styles.modalTitle}>Agregar al menú</Text>
+              <Text style={styles.modalHeaderTitle}>Agregar al menú</Text>
               <TouchableOpacity onPress={handleAddToTrip} disabled={adding}>
                 <Text style={styles.modalSave}>
                   {adding ? "..." : "Agregar"}
                 </Text>
               </TouchableOpacity>
             </View>
-
             <ScrollView style={styles.modalContent}>
-              {/* Paseo selector */}
               <Text style={styles.fieldLabel}>Paseo</Text>
               {paseos.length === 0 ? (
                 <Text style={styles.emptyText}>No tienes paseos activos</Text>
@@ -356,7 +481,6 @@ export default function RecipeDetailScreen() {
                 ))
               )}
 
-              {/* Date selector */}
               {selectedPaseoId && fechas.length > 0 && (
                 <>
                   <Text style={[styles.fieldLabel, { marginTop: 20 }]}>
@@ -400,7 +524,6 @@ export default function RecipeDetailScreen() {
                 </>
               )}
 
-              {/* Tipo selector */}
               {selectedPaseoId && (
                 <>
                   <Text style={[styles.fieldLabel, { marginTop: 4 }]}>
@@ -441,6 +564,9 @@ export default function RecipeDetailScreen() {
   );
 }
 
+// ─────────────────────────────────────────────
+// Styles
+// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f1f5f9" },
   centered: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -451,7 +577,17 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 20,
   },
-  backText: { color: "rgba(255,255,255,0.8)", fontSize: 14, marginBottom: 10 },
+  headerTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  backText: { color: "rgba(255,255,255,0.8)", fontSize: 14 },
+  editText: { color: "rgba(255,255,255,0.9)", fontSize: 14, fontWeight: "600" },
+
+  fotoHero: { width: "100%", height: 200, borderRadius: 12, marginBottom: 14 },
+
   tipoBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -470,17 +606,39 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginBottom: 6,
   },
-  headerDesc: { color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 18 },
-
-  content: { padding: 16, paddingBottom: 100 },
-
-  headerTopRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+  headerDesc: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
+    lineHeight: 18,
     marginBottom: 10,
   },
-  editText: { color: "rgba(255,255,255,0.9)", fontSize: 14, fontWeight: "600" },
+
+  headerMeta: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 8,
+  },
+  headerMetaChip: {
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  headerMetaText: {
+    color: "rgba(255,255,255,0.9)",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+
+  creditosText: {
+    color: "rgba(255,255,255,0.6)",
+    fontSize: 12,
+    fontStyle: "italic",
+    marginTop: 4,
+  },
+
+  content: { padding: 16, paddingBottom: 100 },
 
   tagsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
   tag: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5 },
@@ -503,6 +661,28 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
+  // Keywords & utensilios
+  kwRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  kwTag: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: "#93C5FD",
+  },
+  kwTagText: { fontSize: 12, color: "#1B4F72", fontWeight: "600" },
+  utensilioTag: {
+    backgroundColor: "#FEF3C7",
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+  },
+  utensilioTagText: { fontSize: 12, color: "#92400E", fontWeight: "600" },
+
+  // Scaler
   scalerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -533,6 +713,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 
+  // Ingredientes
   ingredienteRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -549,6 +730,7 @@ const styles = StyleSheet.create({
   },
   ingredienteCantidad: { fontSize: 14, color: "#1B4F72", fontWeight: "700" },
 
+  // Steps
   stepRow: {
     flexDirection: "row",
     gap: 12,
@@ -587,6 +769,36 @@ const styles = StyleSheet.create({
   },
   addToTripBtnText: { color: "#fff", fontSize: 15, fontWeight: "800" },
 
+  // Modals
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  modalBox: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 24,
+    width: "100%",
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#1e293b",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  modalMsg: {
+    fontSize: 14,
+    color: "#64748b",
+    marginBottom: 20,
+    textAlign: "center",
+  },
+  modalBtn: { borderRadius: 12, paddingVertical: 14, alignItems: "center" },
+  modalBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+
   modalContainer: { flex: 1, backgroundColor: "#fff" },
   modalHeader: {
     flexDirection: "row",
@@ -597,7 +809,7 @@ const styles = StyleSheet.create({
     borderBottomColor: "#e2e8f0",
   },
   modalCancel: { fontSize: 15, color: "#64748b" },
-  modalTitle: { fontSize: 16, fontWeight: "700", color: "#1e293b" },
+  modalHeaderTitle: { fontSize: 16, fontWeight: "700", color: "#1e293b" },
   modalSave: { fontSize: 15, color: "#1B4F72", fontWeight: "700" },
   modalContent: { padding: 20 },
 
@@ -619,7 +831,6 @@ const styles = StyleSheet.create({
   optionText: { fontSize: 14, fontWeight: "600", color: "#64748b" },
   optionTextActive: { color: "#1B4F72" },
   optionSub: { fontSize: 12, color: "#94a3b8", marginTop: 2 },
-
   dateChip: {
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -631,7 +842,6 @@ const styles = StyleSheet.create({
   dateChipActive: { borderColor: "#1B4F72", backgroundColor: "#1B4F72" },
   dateChipText: { fontSize: 13, fontWeight: "600", color: "#64748b" },
   dateChipTextActive: { color: "#fff" },
-
   tipoRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 20 },
   tipoBtn: {
     flex: 1,
